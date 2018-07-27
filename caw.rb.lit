@@ -1,0 +1,173 @@
+@title Caw
+
+@overwrite_css typography.css
+
+@s What it is
+
+Caw is a tool for managing the communication
+between various services using a publish / subscribe or
+"pub-sub" model. It is intended to be used from the command line,
+though services may also listen on and communicate with the Caw
+server directly.
+
+@s Publish / Subscribe
+
+The Caw server maintains the state of subscribers and is
+responsible for alerting them to any changes to their subscribed
+channels.
+
+For simplicity, we break out a seperate `PubSub` module that will
+maintain a list of subscribers.
+
+--- pubsub.rb
+
+class PubSub
+  def initialize
+    @subscribers = Hash.new { Array.new }
+  end
+
+  def add_subscriber(channel, subscriber)
+    subscribers[channel] << subscriber
+  end
+
+  def notify(channel, message)
+    subscribers[channel].each { |s| s.notify(channel, message) }
+  end
+
+  private
+
+  attr_reader :subscribers
+end
+
+---
+
+We create a `subscribers` property that maps channel names (Strings)
+to an Array of subscriber objects. This is because conceptually a
+channel with no subscribers still exists, but is simply empty.
+
+Subscribers are added using the `add_subscriber` method, and channels
+are notified using the `notify` method.
+
+@s Creating the Server
+
+Ok, now we are ready to create the server. We listen on a TCP socket
+so that we can easily support all UNIX environments (MacOS, Linux).
+
+--- server.rb
+@{Server dependencies}
+
+SERVER_PORT = 1337
+
+class Server
+  def initialize
+    @{Initialize server}
+  end
+
+  def listen
+    @{Setup TCP server}
+    @{Handle connections}
+  end
+
+  @{Server getters and setters}
+end
+---
+
+Because we're using TCP sockets, we'll need to require the Ruby
+standard library files for creating doing that. See the documentation
+for the `socket` library in Ruby [here](https://ruby-doc.org/stdlib-1.9.3/libdoc/socket/rdoc/TCPSocket.html).
+
+--- Server dependencies
+require 'socket'
+---
+
+Now that we can use sockets, lets set up a TCP socket server.
+The [TCPServer docs](https://ruby-doc.org/stdlib-1.9.3/libdoc/socket/rdoc/TCPServer.html)
+give a pretty good example of how to do this.
+
+--- Setup TCP server
+tcp_server = TCPServer.new(SERVER_PORT)
+---
+
+Well, that was pretty painless.
+
+@s Accepting clients
+
+This is going to be a bit more tricky. Because we need to
+be able to handle multiple clients a time and also accept
+new clients, we will need to use multiple `Thread`s in the server.
+
+I remember hearing that Ruby `Thread`s are not actually OS Threads,
+but the are at least co-routines, meaning that they will not
+block each other. This will be important, because the way we accept
+a new connection to the `TCPServer` is by using `TCPServer#accept`.
+This method blocks until it recieves a new client, so we wouldn't
+be able to handle other messages until a new client connects without
+using threads.
+
+
+--- Server dependencies +=
+require 'thread'
+---
+
+--- Handle connections
+loop do
+  Thread.new(tcp_server.accept) do |client_socket|
+    @{Setup client socket}
+  end
+end
+---
+
+I guess you'll have to use `C-c` to kill this server because
+of the infinite loop. Oh well. This code is lifted directly from
+the TCPServer docs as well.
+
+
+@s Shared state
+
+If we want multiple threads to be able to access the same
+PubSub server, then we are dealing with shared mutable state.
+This is classically a tricky problem with multithreading.
+
+Fortunately, Ruby comes with built in support for dealing with
+this problem. Specifically, [Mutex](https://ruby-doc.org/core-2.2.0/Mutex.html).
+
+--- Initialize server
+@pubsub_mutex = Mutex.new
+---
+
+--- Server getters and setters
+attr_reader :pubsub_mutex
+---
+
+This mutex will be used to protect access to the pubsub server
+property of the server using `pubsub_mutex.synchronize`, as the
+docs explain. Only a single thread will be able to run its critical
+section (the part where it modifies the pubsub) at a time.
+
+
+@s Setting up clients
+
+Note that the *clients* of the TCP server are not nessesarily the
+*listeners* on some channel &mdash; clients may also send messages
+to some channel. Here, we'll need to handle both cases.
+
+--- Setup client socket
+while command_line = client_socket.gets
+  @{Process command line}
+end
+---
+
+@s Processing commands
+
+Processing commands seems like a separate responsibility to the
+responsibity of the server. It's possible to change the protocol
+that is used to send messages, but still use TCP sockets as
+the transport medium. So now we'll create a class for
+parsing messages.
+
+--- command_parser.rb
+class CommandParser
+  def parse(command)
+  end
+end
+---
